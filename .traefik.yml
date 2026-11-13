@@ -1,0 +1,21 @@
+displayName: Subnet Burst Block
+type: middleware
+iconPath: ""
+
+import: github.com/FoxxMD/traefik-subnet-burst
+
+summary: >-
+  Groups clients into subnets (e.g. /16) and temporarily blocks a whole subnet
+  when it sends a burst of requests (or distinct IPs) within a time window.
+  Useful for keeping data-center bot swarms out of analytics backends.
+
+testData:
+  prefixLengthV4: 16
+  prefixLengthV6: 48
+  countPaths:
+    - /api/script.js
+  threshold: 3
+  windowSeconds: 120
+  distinctIPs: true
+  blockSeconds: 3600
+  statusCode: 403

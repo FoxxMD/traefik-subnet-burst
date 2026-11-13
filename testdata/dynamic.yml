@@ -1,0 +1,23 @@
+http:
+  routers:
+    analytics:
+      rule: PathPrefix(`/`)
+      entryPoints: [web]
+      middlewares: [burst]
+      service: whoami
+  middlewares:
+    burst:
+      plugin:
+        subnetburst:
+          countPaths: [/api/script.js]
+          threshold: 3
+          windowSeconds: 60
+          blockSeconds: 30
+          # Test traffic all comes from the Docker bridge, so client IPs are faked through a custom header
+          # (Traefik strips an untrusted X-Forwarded-For before plugins see it).
+          ipHeader: X-Test-Client-Ip
+  services:
+    whoami:
+      loadBalancer:
+        servers:
+          - url: http://whoami
