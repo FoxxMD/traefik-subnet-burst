@@ -19,3 +19,4 @@ testData:
   distinctIPs: true
   blockSeconds: 3600
   statusCode: 403
+  debug: false

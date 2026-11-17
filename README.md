@@ -30,6 +30,7 @@ The request that reaches the threshold is blocked too. With `threshold: 3`, the 
 | `allowedCIDRs` | none | IPs or CIDRs that are never counted or blocked (uptime monitors, your own network). |
 | `ipHeader` | none | Read the client IP from this header instead of the connection address. See below. |
 | `trustedProxies` | none | When set, `ipHeader` is only honored for connections from these CIDRs. |
+| `debug` | `false` | Log every decision this middleware makes at `DBG` level. Plugins don't inherit Traefik's global log level, so this is set per middleware. Expect one or more lines per request. |
 
 ## Install
 
@@ -72,6 +73,16 @@ labels:
   - traefik.http.middlewares.analytics-burst.plugin.subnetburst.threshold=3
   - traefik.http.routers.analytics.middlewares=analytics-burst
 ```
+
+## Logs
+
+The plugin writes to Traefik's stdout in a format close to Traefik's own:
+
+```
+2026-11-17T18:02:11Z INF middlewareName=analytics-burst@file msg="blocking subnet=195.64.0.0/16 for 24h0m0s: 3 distinct IPs in 2m0s (195.64.119.47,195.64.115.161,195.64.3.3)"
+```
+
+`INF` lines are always written: startup config, each subnet that gets blocked, and each block that expires. Set `debug: true` to also see `DBG` lines for every request: the client IP and subnet, whether the path was counted, the subnet's count against the threshold, blocked requests with time remaining, ignored or invalid IP headers, and cleanup of idle subnets.
 
 ## Getting the right client IP
 

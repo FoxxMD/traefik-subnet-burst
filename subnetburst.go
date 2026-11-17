@@ -6,6 +6,7 @@ package traefik_subnet_burst
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"net/netip"
 	"os"
@@ -41,6 +42,9 @@ type Config struct {
 	// TrustedProxies limits IPHeader to requests whose connection address is in one of these CIDRs.
 	// Empty trusts the header from any connection.
 	TrustedProxies []string `json:"trustedProxies,omitempty"`
+	// Debug logs every decision the middleware makes. Plugins don't inherit Traefik's
+	// global log level, so this is set per middleware. Expect a line per request.
+	Debug bool `json:"debug,omitempty"`
 }
 
 // CreateConfig returns the default configuration.
@@ -101,6 +105,7 @@ type SubnetBurst struct {
 	trusted []netip.Prefix
 	store   *store
 	now     func() time.Time
+	logger  *log.Logger
 }
 
 // New creates the middleware.
@@ -130,10 +135,7 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 		return nil, fmt.Errorf("trustedProxies: %w", err)
 	}
 
-	fmt.Fprintf(os.Stdout, "subnet-burst %q: grouping by /%d (v4) /%d (v6), block after %d %s in %ds for %ds\n",
-		name, cfg.PrefixLengthV4, cfg.PrefixLengthV6, cfg.Threshold, unit(cfg.DistinctIPs), cfg.WindowSeconds, cfg.BlockSeconds)
-
-	return &SubnetBurst{
+	sb := &SubnetBurst{
 		next:    next,
 		name:    name,
 		cfg:     cfg,
@@ -143,12 +145,30 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 		trusted: trusted,
 		store:   getStore(name),
 		now:     time.Now,
-	}, nil
+		logger:  log.New(os.Stdout, "", 0),
+	}
+	sb.info("grouping by /%d (v4) /%d (v6), block after %d %s in %ds for %ds",
+		cfg.PrefixLengthV4, cfg.PrefixLengthV6, cfg.Threshold, unit(cfg.DistinctIPs), cfg.WindowSeconds, cfg.BlockSeconds)
+	sb.debug("countPaths=%v statusCode=%d allowedCIDRs=%v ipHeader=%q trustedProxies=%v",
+		cfg.CountPaths, cfg.StatusCode, allowed, cfg.IPHeader, trusted)
+	if cfg.Debug {
+		sb.store.mu.Lock()
+		n := len(sb.store.buckets)
+		sb.store.mu.Unlock()
+		sb.debug("tracking state for %d subnets carried over from previous instance", n)
+	}
+	return sb, nil
 }
 
 func (sb *SubnetBurst) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	addr, ok := sb.clientIP(req)
-	if !ok || contains(sb.allowed, addr) {
+	if !ok {
+		sb.debug("passing request: could not parse client IP from remoteAddr=%q path=%s", req.RemoteAddr, req.URL.Path)
+		sb.next.ServeHTTP(rw, req)
+		return
+	}
+	if contains(sb.allowed, addr) {
+		sb.debug("passing request: ip=%s is in allowedCIDRs path=%s", addr, req.URL.Path)
 		sb.next.ServeHTTP(rw, req)
 		return
 	}
@@ -158,11 +178,12 @@ func (sb *SubnetBurst) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 	subnet, err := addr.Prefix(bits)
 	if err != nil {
+		sb.debug("passing request: could not compute /%d subnet for ip=%s: %v", bits, addr, err)
 		sb.next.ServeHTTP(rw, req)
 		return
 	}
 
-	if sb.record(subnet, addr, sb.counts(req.URL.Path)) {
+	if sb.record(subnet, addr, req.URL.Path) {
 		rw.WriteHeader(sb.cfg.StatusCode)
 		return
 	}
@@ -171,7 +192,7 @@ func (sb *SubnetBurst) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 // record updates the subnet's bucket and reports whether this request must be blocked.
 // ponytail: one global lock per middleware; shard by subnet if request volume ever makes it contend.
-func (sb *SubnetBurst) record(subnet netip.Prefix, addr netip.Addr, counted bool) bool {
+func (sb *SubnetBurst) record(subnet netip.Prefix, addr netip.Addr, path string) bool {
 	now := sb.now()
 	s := sb.store
 	s.mu.Lock()
@@ -180,10 +201,17 @@ func (sb *SubnetBurst) record(subnet netip.Prefix, addr netip.Addr, counted bool
 	sb.sweep(now)
 
 	b := s.buckets[subnet]
-	if b != nil && now.Before(b.blockedUntil) {
-		return true
+	if b != nil && !b.blockedUntil.IsZero() {
+		if now.Before(b.blockedUntil) {
+			sb.debug("blocking request: subnet=%s ip=%s path=%s status=%d remaining=%s",
+				subnet, addr, path, sb.cfg.StatusCode, b.blockedUntil.Sub(now).Round(time.Second))
+			return true
+		}
+		b.blockedUntil = time.Time{}
+		sb.info("block expired for subnet=%s", subnet)
 	}
-	if !counted {
+	if !sb.counts(path) {
+		sb.debug("passing request: path not counted subnet=%s ip=%s path=%s", subnet, addr, path)
 		return false
 	}
 	if b == nil {
@@ -202,12 +230,14 @@ func (sb *SubnetBurst) record(subnet netip.Prefix, addr netip.Addr, counted bool
 	b.hits = append(kept, hit{addr: addr, at: now})
 
 	if len(b.hits) < sb.cfg.Threshold {
+		sb.debug("passing request: counted subnet=%s ip=%s path=%s %s=%d/%d window=%s",
+			subnet, addr, path, unit(sb.cfg.DistinctIPs), len(b.hits), sb.cfg.Threshold, sb.window)
 		return false
 	}
+	sb.info("blocking subnet=%s for %s: %d %s in %s (%s)",
+		subnet, sb.block, len(b.hits), unit(sb.cfg.DistinctIPs), sb.window, hitIPs(b.hits))
 	b.hits = nil
 	b.blockedUntil = now.Add(sb.block)
-	fmt.Fprintf(os.Stdout, "subnet-burst %q: blocking %s for %s (%d %s in %s, last %s)\n",
-		sb.name, subnet, sb.block, sb.cfg.Threshold, unit(sb.cfg.DistinctIPs), sb.window, addr)
 	return true
 }
 
@@ -219,13 +249,21 @@ func (sb *SubnetBurst) sweep(now time.Time) {
 	}
 	s.lastSweep = now
 	cutoff := now.Add(-sb.window)
+	removed := 0
 	for k, b := range s.buckets {
 		if now.Before(b.blockedUntil) {
 			continue
 		}
 		if len(b.hits) == 0 || !b.hits[len(b.hits)-1].at.After(cutoff) {
+			if !b.blockedUntil.IsZero() {
+				sb.info("block expired for subnet=%s", k)
+			}
 			delete(s.buckets, k)
+			removed++
 		}
+	}
+	if removed > 0 {
+		sb.debug("sweep removed %d idle subnets, %d still tracked", removed, len(s.buckets))
 	}
 }
 
@@ -247,6 +285,7 @@ func (sb *SubnetBurst) clientIP(req *http.Request) (netip.Addr, bool) {
 		return remote, ok
 	}
 	if len(sb.trusted) > 0 && (!ok || !contains(sb.trusted, remote)) {
+		sb.debug("ignoring %s header: remoteAddr=%q is not in trustedProxies", sb.cfg.IPHeader, req.RemoteAddr)
 		return remote, ok
 	}
 	v := req.Header.Get(sb.cfg.IPHeader)
@@ -257,6 +296,7 @@ func (sb *SubnetBurst) clientIP(req *http.Request) (netip.Addr, bool) {
 	if addr, ok := parseAddr(strings.TrimSpace(v)); ok {
 		return addr, true
 	}
+	sb.debug("falling back to remoteAddr=%q: %s header is missing or invalid (%q)", req.RemoteAddr, sb.cfg.IPHeader, v)
 	return remote, ok
 }
 
@@ -306,4 +346,26 @@ func unit(distinct bool) string {
 		return "distinct IPs"
 	}
 	return "requests"
+}
+
+func hitIPs(hits []hit) string {
+	ips := make([]string, len(hits))
+	for i, h := range hits {
+		ips[i] = h.addr.String()
+	}
+	return strings.Join(ips, ",")
+}
+
+// Plugins don't inherit Traefik's log level or format, so lines imitate Traefik's own output.
+func (sb *SubnetBurst) logf(level, format string, v ...any) {
+	sb.logger.Printf("%s %s middlewareName=%s msg=%q", time.Now().UTC().Format(time.RFC3339), level, sb.name, fmt.Sprintf(format, v...))
+}
+
+func (sb *SubnetBurst) info(format string, v ...any) { sb.logf("INF", format, v...) }
+
+// Arguments are handled in the manner of [fmt.Printf].
+func (sb *SubnetBurst) debug(format string, v ...any) {
+	if sb.cfg.Debug {
+		sb.logf("DBG", format, v...)
+	}
 }

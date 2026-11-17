@@ -1,9 +1,12 @@
 package traefik_subnet_burst
 
 import (
+	"bytes"
 	"context"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -141,5 +144,44 @@ func TestInvalidConfig(t *testing.T) {
 	cfg.PrefixLengthV4 = 33
 	if _, err := New(context.Background(), http.NotFoundHandler(), cfg, "bad"); err == nil {
 		t.Fatal("expected error for prefixLengthV4=33")
+	}
+}
+
+func TestDebugLogging(t *testing.T) {
+	for _, debug := range []bool{false, true} {
+		sb, c := setup(t, func(cfg *Config) { cfg.Threshold = 2; cfg.Debug = debug })
+		var buf bytes.Buffer
+		sb.logger = log.New(&buf, "", 0)
+
+		do(sb, "195.64.1.1:1", "/api/script.js")
+		do(sb, "195.64.2.2:1", "/api/script.js")
+		do(sb, "195.64.3.3:1", "/api/track")
+		c.advance(2 * time.Hour)
+		do(sb, "195.64.3.3:1", "/api/track")
+		out := buf.String()
+
+		for _, want := range []string{
+			"INF middlewareName=" + t.Name(),
+			`blocking subnet=195.64.0.0/16 for 1h0m0s: 2 distinct IPs in 2m0s (195.64.1.1,195.64.2.2)`,
+			"block expired for subnet=195.64.0.0/16",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("debug=%v: missing %q in:\n%s", debug, want, out)
+			}
+		}
+		if got := strings.Contains(out, " DBG "); got != debug {
+			t.Errorf("debug=%v: DBG lines present=%v in:\n%s", debug, got, out)
+		}
+		if debug {
+			for _, want := range []string{
+				"counted subnet=195.64.0.0/16 ip=195.64.1.1 path=/api/script.js distinct IPs=1/2",
+				"blocking request: subnet=195.64.0.0/16 ip=195.64.3.3 path=/api/track status=403 remaining=1h0m0s",
+				"path not counted subnet=195.64.0.0/16 ip=195.64.3.3 path=/api/track",
+			} {
+				if !strings.Contains(out, want) {
+					t.Errorf("missing %q in:\n%s", want, out)
+				}
+			}
+		}
 	}
 }
