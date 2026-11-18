@@ -81,7 +81,7 @@ labels:
 The plugin writes to Traefik's stdout in a format close to Traefik's own:
 
 ```
-2026-11-17T18:02:11Z INF middlewareName=analytics-burst@file msg="blocking subnet=195.64.0.0/16 for 24h0m0s: 3 distinct IPs in 2m0s (195.64.119.47,195.64.115.161,195.64.3.3)"
+2026-11-17T18:02:11Z INF middlewareName=bot-burst@file msg="blocking subnet=195.64.0.0/16 for 24h0m0s: 3 distinct IPs in 2m0s (195.64.119.47,195.64.115.161,195.64.3.3)"
 ```
 
 `INF` lines are always written: startup config, each subnet that gets blocked, and each block that expires.
@@ -95,10 +95,10 @@ Set `debug: true` to also see `DBG` lines for every request: the client IP and s
 <summary>Example</summary>
 
 ```
-2026-11-18T02:02:15Z DBG middlewareName=analytics-burst@file msg="passing request: counted subnet=195.64.0.0/16 ip=195.64.115.77 path=/foo requests=1/4 window=2s"
-2026-11-18T02:02:16Z DBG middlewareName=analytics-burst@file msg="passing request: path not counted subnet=194.26.0.0/16 ip=194.26.202.193 path=/bar"
+2026-11-18T02:02:15Z DBG middlewareName=bot-burst@file msg="passing request: counted subnet=195.64.0.0/16 ip=195.64.115.77 path=/foo requests=1/4 window=2s"
+2026-11-18T02:02:16Z DBG middlewareName=bot-burst@file msg="passing request: path not counted subnet=194.26.0.0/16 ip=194.26.202.193 path=/bar"
 ...
-2026-11-18T02:02:19Z INF middlewareName=analytics-burst@file msg="blocking subnet=195.64.0.0/16 for 10m0s: 4 requests in 2s (195.64.115.77,195.64.115.78,195.64.115.79,195.64.115.80)"
+2026-11-18T02:02:19Z INF middlewareName=bot-burst@file msg="blocking subnet=195.64.0.0/16 for 10m0s: 4 requests in 2s (195.64.115.77,195.64.115.78,195.64.115.79,195.64.115.80)"
 ```
 </details>
 
