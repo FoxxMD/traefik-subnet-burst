@@ -1,6 +1,5 @@
 displayName: Subnet Burst Block
 type: middleware
-iconPath: ""
 
 import: github.com/FoxxMD/traefik-subnet-burst
 
