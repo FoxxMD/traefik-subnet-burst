@@ -2,16 +2,18 @@
 
 A Traefik middleware plugin that groups clients into subnets (a `/16` by default) and blocks a whole subnet for a while once it sends a burst of requests.
 
-It was built to keep data-center bot swarms out of self-hosted analytics. These bots run real headless browsers, rotate through dozens of IPs in a handful of `/16` networks, use generic user agents, and arrive in short daily bursts. Per-IP rate limits never trip and user-agent lists don't match, but "3 different IPs from the same `/16` loaded `script.js` within 2 minutes" catches them reliably.
+This is a useful tool for blocking a swarm of bots or crawlers that don't otherwise have reliable patterns in their request fingerprints IE bots that use headless browsers, vary IPs, user-agents over time, etc...the common denominator for their crawling/scraping activity is *usually* that they use multiple clients to parallelize the work and these instances all originate from the same cloud provider and share, at same level, a common subnet.
 
-Attach it only to the router you want to protect (for example your analytics host). Everything else, including your actual site, stays reachable.
+Using this tool you can bucket IPs **by subnet** and then block the whole (configurable) subnet for a period of time to block their requests.
+
+Attach this plugin/middleware only to the router you want to protect. Everything else, including your actual site, stays reachable.
 
 ## How it works
 
 1. Each request's client IP is reduced to its subnet (`prefixLengthV4` / `prefixLengthV6`).
 2. Requests whose path starts with one of `countPaths` are recorded in that subnet's sliding window of `windowSeconds`.
 3. When the window holds `threshold` entries, the subnet is blocked for `blockSeconds`. With `distinctIPs: true` (the default), an entry is a distinct client IP, so one visitor reloading a page never triggers a block.
-4. While blocked, **every** request from the subnet that passes through the middleware gets `statusCode` (default `403`), not only the counted paths.
+4. While blocked, **every** request from the subnet that passes through the middleware gets `statusCode` (default `403`).
 
 The request that reaches the threshold is blocked too. With `threshold: 3`, the first two requests in a burst get through.
 
@@ -49,29 +51,29 @@ Dynamic configuration, protecting an analytics backend:
 ```yaml
 http:
   middlewares:
-    analytics-burst:
+    bot-burst:
       plugin:
         subnetburst:
           countPaths:
-            - /api/script.js
+            - /foo
           threshold: 3
           windowSeconds: 120
           blockSeconds: 86400
 
   routers:
-    analytics:
-      rule: Host(`analytics.example.com`)
-      middlewares: [analytics-burst]
-      service: analytics
+    myService:
+      rule: Host(`subdomain.example.com`)
+      middlewares: [bot-burst]
+      service: myService
 ```
 
 Docker labels:
 
 ```yaml
 labels:
-  - traefik.http.middlewares.analytics-burst.plugin.subnetburst.countPaths=/api/script.js
-  - traefik.http.middlewares.analytics-burst.plugin.subnetburst.threshold=3
-  - traefik.http.routers.analytics.middlewares=analytics-burst
+  - traefik.http.middlewares.bot-burst.plugin.subnetburst.countPaths=/foo
+  - traefik.http.middlewares.bot-burst.plugin.subnetburst.threshold=3
+  - traefik.http.routers.myService.middlewares=bot-burst
 ```
 
 ## Logs
@@ -82,7 +84,25 @@ The plugin writes to Traefik's stdout in a format close to Traefik's own:
 2026-11-17T18:02:11Z INF middlewareName=analytics-burst@file msg="blocking subnet=195.64.0.0/16 for 24h0m0s: 3 distinct IPs in 2m0s (195.64.119.47,195.64.115.161,195.64.3.3)"
 ```
 
-`INF` lines are always written: startup config, each subnet that gets blocked, and each block that expires. Set `debug: true` to also see `DBG` lines for every request: the client IP and subnet, whether the path was counted, the subnet's count against the threshold, blocked requests with time remaining, ignored or invalid IP headers, and cleanup of idle subnets.
+`INF` lines are always written: startup config, each subnet that gets blocked, and each block that expires.
+
+## Debug Logs and Tuning Configuration
+
+Set `debug: true` to also see `DBG` lines for every request: the client IP and subnet, whether the path was counted, the subnet's count against the threshold, blocked requests with time remaining, ignored or invalid IP headers, and cleanup of idle subnets.
+
+<details>
+
+<summary>Example</summary>
+
+```
+2026-11-18T02:02:15Z DBG middlewareName=analytics-burst@file msg="passing request: counted subnet=195.64.0.0/16 ip=195.64.115.77 path=/foo requests=1/4 window=2s"
+2026-11-18T02:02:16Z DBG middlewareName=analytics-burst@file msg="passing request: path not counted subnet=194.26.0.0/16 ip=194.26.202.193 path=/bar"
+...
+2026-11-18T02:02:19Z INF middlewareName=analytics-burst@file msg="blocking subnet=195.64.0.0/16 for 10m0s: 4 requests in 2s (195.64.115.77,195.64.115.78,195.64.115.79,195.64.115.80)"
+```
+</details>
+
+If you don't already have a clear subnet prefix pattern and time window for bursts then turn on `debug: true` and wait for a burst to occur, then analyze the logs above to determine how many IPs are making requests within X seconds. Fine tune your configuration based on this.
 
 ## Getting the right client IP
 
@@ -99,7 +119,7 @@ For list headers like `X-Forwarded-For`, the plugin uses the last entry, which i
 
 - **State is in memory.** Counters and active blocks survive Traefik config reloads, but not a Traefik restart.
 - **No sharing between replicas.** Each Traefik instance keeps its own counters. With several replicas behind a load balancer, a burst is split between them and takes longer to trigger.
-- **A subnet is a blunt instrument.** A mobile carrier (CGNAT) or large corporate network can put many real users in one `/16`. On an analytics endpoint the cost is a few uncounted visits. Think harder before attaching this to anything users need.
+- **A subnet is a blunt instrument.** A mobile carrier (CGNAT) or large corporate network can put many real users in one `/16`. On something like an analytics endpoint the cost is a few uncounted visits but be conservative in the subnet use and sliding window before attaching this to anything users seriously need.
 
 ## Development
 
