@@ -46,7 +46,7 @@ experimental:
       version: v0.1.0
 ```
 
-Dynamic configuration, protecting an analytics backend:
+Dynamic configuration, protecting a file-based backend:
 
 ```yaml
 http:
