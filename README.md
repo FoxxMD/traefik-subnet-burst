@@ -2,7 +2,7 @@
 
 A Traefik middleware plugin that groups clients into subnets (a `/16` by default) and blocks a whole subnet for a while once it sends a burst of requests.
 
-This is a useful tool for blocking a swarm of bots or crawlers that don't otherwise have reliable patterns in their request fingerprints IE bots that use headless browsers, vary IPs, user-agents over time, etc...the common denominator for their crawling/scraping activity is *usually* that they use multiple clients to parallelize the work and these instances all originate from the same cloud provider and share, at same level, a common subnet.
+This is a useful tool for blocking a swarm of bots or crawlers that don't otherwise have reliable patterns in their request fingerprints IE bots that use headless browsers, vary IPs, user-agents over time, etc...the common denominator for their crawling/scraping activity is *usually* that they use multiple clients to parallelize the work and these instances all originate from the same cloud provider and share, at some level, a common subnet.
 
 Using this tool you can bucket IPs **by subnet** and then block the whole (configurable) subnet for a period of time to block their requests.
 
